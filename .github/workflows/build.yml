@@ -73,7 +73,6 @@ jobs:
           export THEOS_PACKAGE_SCHEME=rootless
 
           make clean
-
           make package FINALPACKAGE=1 2>&1
 
           echo "Build complete."
@@ -84,12 +83,9 @@ jobs:
             exit 1
           }
 
-          echo "Package metadata:"
-          for deb in packages/*.deb; do
-            echo "----------------------------------------"
-            echo "$deb"
-            dpkg-deb -I "$deb" || true
-          done
+          echo ""
+          echo "Generated packages:"
+          find packages -maxdepth 1 -name "*.deb" -type f -print
         timeout-minutes: 15
 
       - name: Verify Debian package
@@ -105,20 +101,36 @@ jobs:
           echo "$DEB"
 
           echo ""
-          echo "=== Package information ==="
-          dpkg-deb -I "$DEB"
+          echo "=== Package filename ==="
+          basename "$DEB"
 
           echo ""
-          echo "=== Package architecture ==="
-          dpkg-deb -f "$DEB" Architecture
+          echo "=== Package archive ==="
+          ar t "$DEB"
 
           echo ""
-          echo "=== Package dependencies ==="
-          dpkg-deb -f "$DEB" Depends || true
+          echo "=== Control information ==="
+
+          rm -rf /tmp/vcam-deb-check
+          mkdir -p /tmp/vcam-deb-check
+          cd /tmp/vcam-deb-check
+
+          ar x "$GITHUB_WORKSPACE/$DEB"
+
+          if [ -f control.tar.gz ]; then
+            tar -xzf control.tar.gz
+          elif [ -f control.tar.xz ]; then
+            tar -xJf control.tar.xz
+          elif [ -f control.tar.zst ]; then
+            tar --zstd -xf control.tar.zst
+          else
+            echo "Cannot find control archive."
+            exit 1
+          fi
 
           echo ""
-          echo "=== Package files ==="
-          dpkg-deb -c "$DEB"
+          echo "=== control ==="
+          cat ./control
 
       - name: Prepare output
         run: |
@@ -132,7 +144,7 @@ jobs:
             exit 1
           fi
 
-          echo "Copying:"
+          echo "Copying package:"
           echo "$DEB"
 
           cp "$DEB" output/
@@ -156,7 +168,15 @@ jobs:
           echo "Extracting package:"
           echo "$DEB"
 
-          dpkg-deb -x "$DEB" extracted/
+          ar x "$DEB" --output extracted 2>/dev/null || true
+
+          if [ -f extracted/data.tar.gz ]; then
+            tar -xzf extracted/data.tar.gz -C extracted/
+          elif [ -f extracted/data.tar.xz ]; then
+            tar -xJf extracted/data.tar.xz -C extracted/
+          elif [ -f extracted/data.tar.zst ]; then
+            tar --zstd -xf extracted/data.tar.zst -C extracted/
+          fi
 
           echo ""
           echo "Searching for dylib..."
@@ -174,6 +194,7 @@ jobs:
           echo ""
           echo "Final output:"
           ls -lh output/
+        timeout-minutes: 10
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
