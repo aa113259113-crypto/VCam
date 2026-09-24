@@ -6,75 +6,187 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+env:
+  THEOS_PACKAGE_SCHEME: rootless
+
 jobs:
   build:
     name: Build iOS Tweak
     runs-on: macos-14
-    
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        brew install ldid xz
-      timeout-minutes: 10
+      - name: Install dependencies
+        run: |
+          brew install ldid xz
+        timeout-minutes: 10
 
-    - name: Install Theos
-      run: |
-        export THEOS=~/theos
-        git clone --recursive https://github.com/theos/theos.git ~/theos
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-        echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
-      timeout-minutes: 10
+      - name: Install Theos
+        run: |
+          export THEOS=$HOME/theos
 
-    - name: Install iOS SDK
-      run: |
-        curl -fsSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
-        mkdir -p $HOME/theos/sdks
-        tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks
-        echo "Installed SDKs:"
-        ls $HOME/theos/sdks/
-      timeout-minutes: 10
+          git clone --recursive https://github.com/theos/theos.git "$HOME/theos"
 
-    - name: Build Tweak
-      run: |
-        export THEOS=$HOME/theos
-        export PATH=$HOME/theos/bin:$PATH
-        make clean
-        make package FINALPACKAGE=1 2>&1
-        echo "Build complete. Packages:"
-        ls -lh packages/ 2>/dev/null || echo "No packages dir"
-      timeout-minutes: 15
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "THEOS_PACKAGE_SCHEME=rootless" >> "$GITHUB_ENV"
+          echo "PATH=$HOME/theos/bin:$PATH" >> "$GITHUB_ENV"
 
-    - name: Extract dylib
-      run: |
-        mkdir -p output
-        DEB=$(ls packages/*.deb 2>/dev/null | head -1)
-        if [ -z "$DEB" ]; then
-          echo "No deb found!"
-          exit 1
-        fi
-        echo "Found: $DEB"
-        cp "$DEB" output/
-        cd output
-        ar x ../packages/*.deb 2>/dev/null || dpkg-deb -x "$DEB" .
-        # Try to find dylib in extracted contents
-        find . -name "*.dylib" -exec cp {} ./VCam.dylib \; 2>/dev/null
-        # If ar worked, try tar
-        tar -xf data.tar* 2>/dev/null && find . -name "*.dylib" -exec cp {} ./VCam.dylib \; 2>/dev/null
-        ls -lh
+          echo "Theos installed:"
+          ls -la "$HOME/theos"
+        timeout-minutes: 10
 
-    - name: Upload dylib
-      uses: actions/upload-artifact@v4
-      with:
-        name: VCam-dylib
-        path: output/VCam.dylib
-        retention-days: 30
+      - name: Install iOS SDK
+        run: |
+          curl -fsSL \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz \
+            -o /tmp/sdk.tar.xz
 
-    - name: Upload deb
-      uses: actions/upload-artifact@v4
-      with:
-        name: VCam-deb
-        path: output/*.deb
-        retention-days: 30
+          mkdir -p "$HOME/theos/sdks"
+
+          tar -xf /tmp/sdk.tar.xz \
+            -C "$HOME/theos/sdks"
+
+          echo "Installed SDKs:"
+          ls -la "$HOME/theos/sdks/"
+        timeout-minutes: 10
+
+      - name: Verify build environment
+        run: |
+          export THEOS=$HOME/theos
+          export PATH=$HOME/theos/bin:$PATH
+
+          echo "THEOS=$THEOS"
+          echo "THEOS_PACKAGE_SCHEME=$THEOS_PACKAGE_SCHEME"
+
+          echo "Available SDKs:"
+          ls -la "$THEOS/sdks/"
+
+          echo "Theos version:"
+          git -C "$THEOS" rev-parse --short HEAD
+
+      - name: Build Tweak
+        run: |
+          export THEOS=$HOME/theos
+          export PATH=$HOME/theos/bin:$PATH
+          export THEOS_PACKAGE_SCHEME=rootless
+
+          make clean
+
+          make package FINALPACKAGE=1 2>&1
+
+          echo "Build complete."
+          echo "Packages:"
+
+          ls -lh packages/ 2>/dev/null || {
+            echo "No packages directory found!"
+            exit 1
+          }
+
+          echo "Package metadata:"
+          for deb in packages/*.deb; do
+            echo "----------------------------------------"
+            echo "$deb"
+            dpkg-deb -I "$deb" || true
+          done
+        timeout-minutes: 15
+
+      - name: Verify Debian package
+        run: |
+          DEB=$(find packages -maxdepth 1 -name "*.deb" -type f | head -1)
+
+          if [ -z "$DEB" ]; then
+            echo "No deb found!"
+            exit 1
+          fi
+
+          echo "Found package:"
+          echo "$DEB"
+
+          echo ""
+          echo "=== Package information ==="
+          dpkg-deb -I "$DEB"
+
+          echo ""
+          echo "=== Package architecture ==="
+          dpkg-deb -f "$DEB" Architecture
+
+          echo ""
+          echo "=== Package dependencies ==="
+          dpkg-deb -f "$DEB" Depends || true
+
+          echo ""
+          echo "=== Package files ==="
+          dpkg-deb -c "$DEB"
+
+      - name: Prepare output
+        run: |
+          rm -rf output
+          mkdir -p output
+
+          DEB=$(find packages -maxdepth 1 -name "*.deb" -type f | head -1)
+
+          if [ -z "$DEB" ]; then
+            echo "No deb found!"
+            exit 1
+          fi
+
+          echo "Copying:"
+          echo "$DEB"
+
+          cp "$DEB" output/
+
+          echo ""
+          echo "Output files:"
+          ls -lh output/
+
+      - name: Extract dylib
+        run: |
+          DEB=$(find output -maxdepth 1 -name "*.deb" -type f | head -1)
+
+          if [ -z "$DEB" ]; then
+            echo "No deb in output!"
+            exit 1
+          fi
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          echo "Extracting package:"
+          echo "$DEB"
+
+          dpkg-deb -x "$DEB" extracted/
+
+          echo ""
+          echo "Searching for dylib..."
+
+          DYLIB=$(find extracted -name "*.dylib" -type f | head -1)
+
+          if [ -n "$DYLIB" ]; then
+            echo "Found dylib:"
+            echo "$DYLIB"
+            cp "$DYLIB" output/VCam.dylib
+          else
+            echo "No dylib found in package."
+          fi
+
+          echo ""
+          echo "Final output:"
+          ls -lh output/
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: VCam-deb
+          path: output/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: VCam-dylib
+          path: output/VCam.dylib
+          if-no-files-found: warn
+          retention-days: 30
